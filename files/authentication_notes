@@ -1,0 +1,16 @@
+In account db, save salt and password_hash.
+salt = random_string(), randomly generate for every user. 
+password_hash = sha(sha(password) - salt) 
+
+
+client -> server
+  uid 
+server -> client
+  salt
+  verify_code: random string generated for every session
+
+client -> server
+  encrypted_password = AES(data=sha(raw_password), key=sha(sha(sha(password) - salt) - verify_code))
+
+server -> client
+  session_id
