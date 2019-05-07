@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-apt-get install -y python3.4-dev # python3-dev
+apt-get install -y python3-dev # python3-dev
 apt-get install -y libmysqlclient-dev
 apt-get install -y python-mysqldb
 

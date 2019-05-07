@@ -1,0 +1,24 @@
+[Unit]
+Description=service name daemon
+After=network.target
+
+[Service]
+PIDFile=/var/run/gunicorn/service_name.pid
+User=root
+Group=root
+RuntimeDirectory=/var/run/gunicorn/service_name
+WorkingDirectory=/data/service_name
+ExecStart=/venvs/service_name/bin/gunicorn service_name.wsgi:application \
+		-w 8 \
+		-k gevent \
+		-b 0.0.0.0:8384 \
+		--log-file /var/log/service_name_gunicorn.log \
+		--keep-alive 86400000 \
+		--graceful-timeout 180 \
+		--pid=/var/run/gunicorn/service_name.pid
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s TERM $MAINPID
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
