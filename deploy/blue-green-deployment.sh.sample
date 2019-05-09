@@ -1,0 +1,121 @@
+#!/bin/bash
+
+### Run with root privilege
+### PREREQUISITES:
+### 1. 2 copies of services (e.g. service_name.blue, service_name.green )
+### 2. 2 copies of available nginx sites (e.g. domain.com.blue, domain.com.green )
+### 3. nginx uses TCP port upstreams (e.g. server 0.0.0.0:8384, server 0.0.0.0:8384 )
+
+SERVICE_NAME=service_name
+NGINX_SITE_NAME=domain.com
+PID_FILE_LOCATION=/var/run/gunicorn
+BLUE=blue
+GREEN=green
+
+# exit when any command fails
+set -e
+trap "exit 1" TERM
+export TOP_PID=$$
+
+
+get_service_name() {
+	printf "%s.%s" ${SERVICE_NAME} $1
+}
+
+get_service_pid() {
+	local file=$( printf "%s/%s.%s.pid" ${PID_FILE_LOCATION} ${SERVICE_NAME} $1 )
+	if [[ -e "${file}" ]]; then
+		kill -s TERM ${TOP_PID}
+		exit 1
+	fi
+	cat "${file}"
+}
+
+get_available_nginx_site() {
+	printf "/etc/nginx/sites-available/%s.%s" ${NGINX_SITE_NAME} $1
+}
+
+get_service_port() {
+	local nginx_site_file=$( get_available_nginx_site $1 )
+	if [[ ! -e "${nginx_site_file}" ]]; then
+		echo "Nginx config file ${nginx_site_file} does not exist" > /dev/tty
+		kill -s TERM ${TOP_PID}
+		exit 1
+	fi
+	grep -E '[^#]*server .+:([0-9]+)' ${nginx_site_file} | sed 's/[^:]*:\([0-9]\+\).*/\1/'
+}
+
+deploy_service() {
+	local service_name=$( get_service_name $1 )
+	local port=$( get_service_port $1 )
+
+	# ensure TCP port is available
+	if [[ $( netstat -aln | grep "${port}" | wc -l ) > 0 ]]; then
+		echo "Port ${port} is in use" > /dev/tty
+		kill -s TERM ${TOP_PID}
+		exit 1
+	fi
+
+	echo "Deploying ${service_name} service" > /dev/tty
+
+	command service ${service_name} start
+	# command systemctl restart ${service_name}.service
+
+	while [[ $( netstat -aln | grep "${port}" | wc -l ) == 0 ]]; do  # ensure service is listening
+		echo "Service ${service_name} is not listening, waiting..." > /dev/tty
+		sleep 1
+	done
+
+	echo "Deployed ${service_name} service successfully" > /dev/tty
+}
+
+grace_stop_service() {
+	local service_name=$( get_service_name $1 )
+	local port=$( get_service_port $1 )
+
+	echo "Stopping ${service_name} service" > /dev/tty
+
+	command service ${service_name} stop
+	# command systemctl stop ${service_name}.service
+	# command kill -s TERM $( get_service_pid $1 )
+
+	local pending_connections=$( netstat -aln | grep "${port}" | wc -l )
+	while true; do  # ensure there is no pending request
+		if [[ ${pending_connections} > 0 ]]; then
+			echo "Number of pending connections on port ${port}: ${pending_connections}" > /dev/tty
+			sleep 3
+			pending_connections=$( netstat -aln | grep "${port}" | wc -l )
+		else
+			echo "There is no pending connection on port ${port}" > /dev/tty
+			break;
+		fi
+	done
+
+	echo "Stopped ${service_name} service"
+}
+
+enabled_nginx_site=$( printf "/etc/nginx/sites-enabled/%s" ${NGINX_SITE_NAME} )
+active_node=$( readlink -f ${enabled_nginx_site} | sed 's/.*\.\([a-z]*\)/\1/' )
+
+route_to_new_service() {
+	command ln -sfn $( get_available_nginx_site $1 ) ${enabled_nginx_site}
+	command nginx -t
+	command service nginx reload
+	echo "Nginx has been reloaded" > /dev/tty
+}
+
+if [[ ${active_node} == ${BLUE} ]]; then
+	echo "Blue service is running" > /dev/tty
+	deploy_service ${GREEN} || exit
+	route_to_new_service ${GREEN}
+	grace_stop_service ${BLUE}
+elif [[ ${active_node} == ${GREEN} ]]; then
+	echo "Green service is running" > /dev/tty
+	deploy_service ${BLUE} || exit
+	route_to_new_service ${BLUE}
+	grace_stop_service ${GREEN}
+else
+	echo "No service is running" > /dev/tty
+	deploy_service ${BLUE}
+	route_to_new_service ${BLUE}
+fi
